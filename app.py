@@ -5,6 +5,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 
+app.secret_key = "dev-secret-change-me-later"
+
 DB = "posts.db"   # the database file — this is your whole database, one file on disk
 
 # --- Database setup ---
@@ -15,7 +17,9 @@ def init_db():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            content TEXT NOT NULL
+            content TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users (id)
         )
     """)
     conn.execute("""
@@ -33,42 +37,52 @@ def init_db():
 @app.route("/")
 def home():
     conn = sqlite3.connect(DB)
-    cursor = conn.execute("SELECT content FROM posts ORDER BY id DESC")
-    rows = cursor.fetchall()   # get all matching rows as a list
+    cursor = conn.execute("SELECT posts.content, users.username FROM posts JOIN users ON posts.user_id = users.id ORDER BY posts.id DESC")
+    rows = cursor.fetchall()
     conn.close()
 
-    # rows is a list of tuples like [("hello",), ("world",)] — note the comma:
-    # each row is a tuple, and we want the first (only) column, so row[0].
+    # Each row is (content, username) from the JOIN.
     posts_html = ""
     for row in rows:
-        posts_html += f"<p>{row[0]}</p>"
+        posts_html += f"<p><b>{row[1]}</b>: {row[0]}</p>"
 
+    # One branch decides everything that depends on being logged in:
+    # which nav links to show AND whether the post form appears.
     if "user_id" in session:
         nav = "<a href='/logout'>Logout</a>"
+        form = """
+            <form action="/add" method="POST">
+                <input name="content" placeholder="What's happening?">
+                <button type="submit">Post</button>
+            </form>
+        """
     else:
         nav = "<a href='/signup'>Sign Up</a> | <a href='/login'>Login</a>"
+        form = "<p>Log in to post.</p>"
 
     return f"""
         <h1>My Twitter Clone</h1>
         {nav}
-        <form action="/add" method="POST">
-            <input name="content" placeholder="What's happening?">
-            <button type="submit">Post</button>
-        </form>
+        {form}
         <hr>
         {posts_html}
     """
 
 @app.route("/add", methods=["POST"])
 def add():
+    if "user_id" not in session:        # bounce before touching anything
+        return redirect("/login")
+
     content = request.form["content"]
+    user_id = session["user_id"]
 
     conn = sqlite3.connect(DB)
-    # The ? placeholder = safe. User input is data, never SQL. Prevents injection.
-    conn.execute("INSERT INTO posts (content) VALUES (?)", (content,))
-    conn.commit()   # actually write it to disk
+    conn.execute(
+        "INSERT INTO posts (content, user_id) VALUES (?, ?)",
+        (content, user_id),
+    )
+    conn.commit()
     conn.close()
-
     return redirect("/")
 
 @app.route("/signup")
@@ -142,8 +156,6 @@ def login():
 def logout():
     session.pop("user_id", None)    # remove the id; the cookie no longer proves anything
     return redirect("/")
-
-app.secret_key = "dev-secret-change-me-later"
 
 if __name__ == "__main__":
     init_db()              # make sure the table exists before serving
